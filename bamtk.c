@@ -32,6 +32,7 @@ DEALINGS IN THE SOFTWARE.  */
 #include "htslib/hts.h"
 #include "samtools.h"
 #include "version.h"
+#include "version_sqc.h"
 
 int bam_taf2baf(int argc, char *argv[]);
 int bam_mpileup(int argc, char *argv[]);
@@ -70,6 +71,11 @@ const char *samtools_version()
     return SAMTOOLS_VERSION;
 }
 
+const char *sqc_version()
+{
+    return SQC_VERSION;
+}
+
 static void usage(FILE *fp)
 {
     /* Please improve the grouping */
@@ -77,7 +83,7 @@ static void usage(FILE *fp)
     fprintf(fp,
 "\n"
 "Program: samtools (Tools for alignments in the SAM format)\n"
-"Version: %s (using htslib %s)\n\n", samtools_version(), hts_version());
+"Version: %s (using htslib %s, using sqc %s)\n\n", samtools_version(), hts_version(), sqc_version());
     fprintf(fp,
 "Usage:   samtools <command> [options]\n"
 "\n"
@@ -203,11 +209,13 @@ int main(int argc, char *argv[])
         printf(
 "samtools %s\n"
 "Using htslib %s\n"
-"Copyright (C) 2018 Genome Research Ltd.\n",
-               samtools_version(), hts_version());
+"Using sqc %s\n"
+// "Copyright (C) 2018 Genome Research Ltd.\n"
+"Copyright (C) 2019 Aginome Scientific\n",
+               samtools_version(), hts_version(), sqc_version());
     }
     else if (strcmp(argv[1], "--version-only") == 0) {
-        printf("%s+htslib-%s\n", samtools_version(), hts_version());
+        printf("%s+htslib-%s+sqc-%s\n", samtools_version(), hts_version(), sqc_version());
     }
     else {
         fprintf(stderr, "[main] unrecognized command '%s'\n", argv[1]);

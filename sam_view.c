@@ -47,6 +47,8 @@ DEALINGS IN THE SOFTWARE.  */
 #include "sam_opts.h"
 #include "bedidx.h"
 
+#include "cram/cram_structs.h"
+
 #define DEFAULT_BARCODE_TAG "BC"
 #define DEFAULT_QUALITY_TAG "QT"
 
@@ -72,6 +74,7 @@ typedef struct samview_settings {
     size_t remove_aux_len;
     char** remove_aux;
     int multi_region;
+    sqc_option sqc;
 } samview_settings_t;
 
 
@@ -255,6 +258,10 @@ int main_samview(int argc, char *argv[])
     int filter_state = ALL, filter_op = 0;
     int result;
 
+    // sqc_enc and sqc_dec argument values
+    // 0 for original samtools by default
+    // 1 for implementation v1
+    // 2 for fast implementation
     samview_settings_t settings = {
         .rghash = NULL,
         .min_mapQ = 0,
@@ -267,11 +274,22 @@ int main_samview(int argc, char *argv[])
         .subsam_frac = -1.,
         .library = NULL,
         .bed = NULL,
-        .multi_region = 0
+        .multi_region = 0,
+		.sqc.sqc_enc = 0, // SQC_TODO: run original samtools by default
+		.sqc.sqc_dec = 0,
+		.sqc.sqc_bpq = 8, // 8 by default
+        .sqc.sqc_cbr_bp = 1, // 1 by default
+		.sqc.segsize = 20 // 20 by default
     };
 
     static const struct option lopts[] = {
         SAM_OPT_GLOBAL_OPTIONS('-', 0, 'O', 0, 'T', '@'),
+		{"sqc-enc", no_argument, NULL, 'e'}, // usage: --sqc-enc OR -e (short form not recommended)
+		{"sqc-dec", no_argument, NULL, 'a'}, // usage: --sqc-dec OR -a (short form not recommended)
+		{"sqc-trunc", no_argument, NULL, '3'}, // usage: --sqc-trunc
+		{"sqc-bpq", required_argument, NULL, 'p'}, // usage: --sqc-bpq 0.1 OR -p 0.1 (short form recommended)
+        {"sqc-cbr", required_argument, NULL, 'v'}, // usage: --sqc-cbr 1 OR -v 1 (short form not recommended)
+		{"sqc-segsize", required_argument, NULL, 'g'}, // e.g., --sqc-segsize 20 OR -g 20 (short form recommended)
         { NULL, 0, NULL, 0 }
     };
 
@@ -287,9 +305,10 @@ int main_samview(int argc, char *argv[])
     // set optopt to '\0').
     opterr = 0;
 
+    int option_index = 0;
     while ((c = getopt_long(argc, argv,
-                            "SbBcCt:h1Ho:O:q:f:F:G:ul:r:T:R:L:s:@:m:x:U:M",
-                            lopts, NULL)) >= 0) {
+                            "SbBcCt:h1Ho:O:q:f:F:G:ul:r:T:R:L:s:@:m:x:U:Mea3p:g:v:",
+                            lopts, &option_index)) >= 0) {
         switch (c) {
         case 's':
             if ((settings.subsam_seed = strtol(optarg, &q, 10)) != 0) {
@@ -380,6 +399,58 @@ int main_samview(int argc, char *argv[])
             }
             break;
         case 'M': settings.multi_region = 1; break;
+        case 'e':
+        	printf("[main_samview] using sqc encoder for quality\n");
+        	settings.sqc.sqc_enc = 1;
+        	break;
+        case 'a':
+        	printf("[main_samview] using sqc decoder for quality\n");
+        	settings.sqc.sqc_dec = 1;
+        	break;
+        case '3':
+            printf("[main_samview] using sqc bitstream truncator for quality values\n");
+            settings.sqc.sqc_cut = 1;
+            settings.sqc.sqc_dec = 1;
+            break;
+        case 'p':
+        	settings.sqc.sqc_bpq = atof(optarg);
+        	if (settings.sqc.sqc_bpq >=0  && settings.sqc.sqc_bpq <=8 ) {
+        		printf("[main_samview] sqc bits-per-quality (bpq): %.2f\n", settings.sqc.sqc_bpq);
+        	} else {
+        		printf("[main_samview] sqc bits-per-quality (bpq): %.2f is out of range [0,8],\n", settings.sqc.sqc_bpq);
+        		printf("               set to 8 for default lossless encoding and decoding \n");
+                // printf("               or 8 for default full decoding \n");
+        		// if (settings.sqc.sqc_enc) settings.sqc.sqc_bpq = 0.05;
+                // else if (settings.sqc.sqc_dec) 
+                settings.sqc.sqc_bpq = 8;
+        	}
+        	break;
+        // case 'z':
+        // 	settings.sqc.sqc_ps = atof(optarg);
+        // 	if (settings.sqc.sqc_ps >=0  && settings.sqc.sqc_ps <=1 ) {
+        // 		printf("[main_samview] sqc encoder somatic probability: %.2f\n", settings.sqc.sqc_ps);
+        // 	} else {
+        // 		printf("[main_samview] sqc somatic probability: %.2f is out of range [0,1],\n", settings.sqc.sqc_ps);
+        //         printf("               set to 0.0 for germline only\n");
+        //         settings.sqc.sqc_ps = 0.0;
+        // 	}
+        // 	break;
+        case 'g':
+        	settings.sqc.segsize = atoi(optarg);
+        	if (settings.sqc.segsize < 10 || settings.sqc.segsize > 250) {
+        		printf("[main_samview] sqc encoder segment size: %d is out of range [10, readLength], \n", settings.sqc.segsize);
+        		printf("               set to default 20\n");
+        		settings.sqc.segsize = 20;
+        	}
+        	break;
+        case 'v':
+            settings.sqc.sqc_cbr_bp = atoi(optarg);
+            if (settings.sqc.sqc_cbr_bp < 1 || settings.sqc.sqc_cbr_bp > 6) {
+                printf("[main_samview] sqc encoder cbr bp: %d is out of range [1,6], \n", settings.sqc.sqc_cbr_bp);
+                printf("               set to default 1\n");
+                settings.sqc.sqc_cbr_bp = 1;
+            }
+            break;
         default:
             if (parse_sam_global_opt(c, optarg, lopts, &ga) != 0)
                 return usage(stderr, EXIT_FAILURE, 0);
@@ -493,7 +564,23 @@ int main_samview(int argc, char *argv[])
             }
         }
     }
-
+    // {{ SQC_TODO
+    if (settings.sqc.sqc_enc) {
+        assert(out->is_cram);
+        ((htsFile *)(out))->fp.cram->sqc = settings.sqc;
+    }
+    if (settings.sqc.sqc_dec) {
+    	 assert(in->is_cram);
+        ((htsFile *)(in))->fp.cram->sqc = settings.sqc;        
+    }
+    if (settings.sqc.sqc_cut) {
+        assert(in->is_cram);
+        assert(out->is_cram);
+        
+        ((htsFile *)(in))->fp.cram->sqc = settings.sqc;
+        ((htsFile *)(out))->fp.cram->sqc = settings.sqc;
+    }
+    // }}
     if (ga.nthreads > 1) {
         if (!(p.pool = hts_tpool_init(ga.nthreads))) {
             fprintf(stderr, "Error creating thread pool\n");
@@ -558,14 +645,61 @@ int main_samview(int argc, char *argv[])
         if (optind + 1 >= argc) { // convert/print the entire file
             bam1_t *b = bam_init1();
             int r;
+
+            uint16_t in_rc = 0;//, out_rc = 0; // input and output read counts
+            uint8_t *qb_buf = 0; // quality bitstream buffer
+            int qb_buf_len = 0;
+            bool set_qb_buf = false;
+            cram_fd *fd_in; 
+            cram_fd *fd_out; 
+            cram_slice *s_in, *s_out; 
+
+            if (settings.sqc.sqc_cut) {
+#ifndef DATA_BUF_SIZE
+#define DATA_BUF_SIZE 1000000
+#endif
+                qb_buf = (uint8_t *)calloc(DATA_BUF_SIZE, sizeof(uint8_t)); 
+                if (!qb_buf) { 
+                    printf("memory failure\n"); 
+                    goto view_end;
+                }
+            }
+
             while ((r = sam_read1(in, header, b)) >= 0) { // read one alignment from `in'
+                if (settings.sqc.sqc_cut) {
+                    if (in_rc == 0) { // is first read of the slice
+                        fd_in = ((htsFile *)(in))->fp.cram;
+                        s_in = fd_in->ctr->slice;
+                        qb_buf_len = sqc_getTruncatedBitstream(s_in->sqc_qe, qb_buf); // copy from sqc_qe to qual_blk
+                    }
+                    in_rc++;
+                    if (in_rc == fd_in->ctr->num_records) {
+                        in_rc = 0;
+                        set_qb_buf = true;
+                    }
+                }
                 if (!process_aln(header, b, &settings)) {
-                    if (!is_count) { if (check_sam_write1(out, header, b, fn_out, &ret) < 0) break; }
+                    if (!is_count) {                       
+                        if (settings.sqc.sqc_cut && set_qb_buf == true) {
+                            fd_out = ((htsFile *)(out))->fp.cram;                                
+                            s_out = fd_out->ctr->slice;
+
+                            // for (int i = 0; i < qb_buf_len; i++)
+                            //     printf("%d, ", (uint16_t)qb_buf[i]);
+                            // printf("\n");
+
+                            sqc_setTruncatedBitstream(s_out->sqc_qe, qb_buf, qb_buf_len); // copy from qual_blk to sqc_qe
+                            set_qb_buf = false;
+                        }
+                        if (check_sam_write1(out, header, b, fn_out, &ret) < 0) break; 
+                    }
                     count++;
                 } else {
                     if (un_out) { if (check_sam_write1(un_out, header, b, fn_un_out, &ret) < 0) break; }
                 }
             }
+            if (qb_buf) free(qb_buf);
+
             if (r < -1) {
                 fprintf(stderr, "[main_samview] truncated file.\n");
                 ret = 1;
@@ -657,7 +791,7 @@ static int usage(FILE *fp, int exit_status, int is_long_help)
 "Options:\n"
 // output options
 "  -b       output BAM\n"
-"  -C       output CRAM (requires -T)\n"
+"  -C       output CRAM (requires -T), or SQC (requires -T, --sqc-enc)\n"
 "  -1       use fast BAM compression (implies -b)\n"
 "  -u       uncompressed BAM output (implies -b)\n"
 "  -h       include header in SAM output\n"
@@ -729,6 +863,14 @@ static int usage(FILE *fp, int exit_status, int is_long_help)
 "   another samtools command.\n"
 "\n");
 
+    fprintf(fp,
+// SQC related options
+"  --sqc-enc              Encode raw alignment file and output SQC bitstream\n"
+"  --sqc-dec              Decode SQC bitstream to raw alignment file\n"
+"  --sqc-trunc            Truncate SQC bitstream\n"
+"  -p, --sqc-bpq FLOAT    Set bits-per-quality (bpq) value for SQC encoder, decoder or truncator\n"
+"  -v, --sqc-cbr INT      Set lowest bitplane for context modeling, default 1\n"
+"  -g, --sqc-segsize INT  Set segment size for SQC encoder, default 20\n\n");
     return exit_status;
 }
 
