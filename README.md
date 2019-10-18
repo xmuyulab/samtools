@@ -1,7 +1,9 @@
 samtools
 ========
 
-This is the official development repository for samtools.
+This is the samtools with supporting of ScaleQC, integrated with official samtools version 1.9-dirty.
+
+To use ScaleQC, use this samtools coupled with htslib at https://github.com/xmuyulab/htslib
 
 The original samtools package has been split into three separate
 but tightly coordinated projects:
